@@ -1,0 +1,676 @@
+---
+title: "UBER User Trip Analysis"
+author: "Jiehwan Yang"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Intro
+
+Lately, I have noticed a skyrocketing number of mobility services around my neighborhood ranging from sharing bikes, electronic scooters, etc. My dad once told me that he used to walk 1-2 hours just to go to school, but these days I can just take an electronic scooter to light-rail station, ride a light-rail to the airport, fly to Chicago, then take Uber to get to my friend's house. How easy is that?
+
+The entire way we travel from point A to point B has been changing dramatically, and Uber might have been a starter in the mobility industry. Every time I use Uber, I've wondered what kind of data they might be collecting from my ride and had these following questions:
+
++ Can they infer that I am a student or a full-time worker based on my profile and my route on specific time?
++ Which cluster of people would I fall into?
++ Would they know that I am doing an internship in Chicago just for this summer and will head back home afterwards? If so, what kind promotion can they provide?
++ How do they optimize their pricing model when there's surging demands during rain or snow storms?
+
+Coming up with possible answers and what kind of tools I can use to answer these back-to-back questions, I arrive at my destination in no time.
+
+These curiosity provoking questions were enough to trigger me to look for related-data, and I stumbled upon a dataset someone named "Stan Tyan" shared on Kaggle [UBER RIDE HISTORY](https://www.kaggle.com/stantyan/uber-rides). It was a dataset that Stan collected from his 678 Uber and Gett(Uber-like service in Russia) rides for 2 years by syncing his mobile app account to Google Spreadsheet and automatically uploading each ride every time he arrives at the destination.
+
+
+Stan is Russian, and I was able to reach him via [his blog](https://stantyan.com/). I asked if it's okay to use the dataset to do some EDA and publish it on my blog, and he was very kind to give me permission. Below is a snapshot of the email I received from Stan:
+
+![](C:\Users\82104\OneDrive - Electronic Arts\Side Projects\UBER\stan_email.png)
+---
+![](C:\Users\82104\OneDrive - Electronic Arts\Side Projects\UBER\russian_ubear.png)
+---
+
+Side Notes:
+
+Unlike Uber in the US where anyone with one's own car and a driver's license, only taxi drivers are allowed to drive via Uber in Russia. In many countries, Uber has gained some hatred from people, especially taxi drivers, for taking away rides from domestic taxi drivers and even ripping away commission for the service. In Korea, the taxi driver's license is an asset that drivers can sell for over $50000, so the Korean government banned Uber service because it would allow anyone to drive via Uber and make money.
+
+
+========================================================================================================================
+
+## Data
+```{r echo=FALSE, results="hide", warning=FALSE, message=FALSE}
+library(dplyr)
+library(lubridate)
+library(ggplot2)
+library(chron)
+library(plotly)
+library(leaflet)
+library(fastDummies)
+library(corrplot)
+library(knitr)
+library(rmarkdown)
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+uber_user_df<- read.csv("C:\\Users\\82104\\Desktop\\Side Projects\\UBER\\uber-rides-dataset.csv",stringsAsFactors = FALSE)
+# 필요할 것 같은 column 들만 추출
+dat<- uber_user_df %>% select(trip_uid,
+                                         trip_start_time,
+                                         trip_end_time,
+                                         trip_time,
+                                         wait_time,
+                                         total_time,
+                                         price_usd,
+                                         distance_kms,
+                                         trip_type,
+                                         surge_multiplier,
+                                         vehicle_model,
+                                         vehicle_make,
+                                         driver_name_en,
+                                         pickup_lat,
+                                         pickup_long,
+                                         dropoff_lat,
+                                         dropoff_long,
+                                         trip_start_address,
+                                         trip_end_address,
+                                         temperature_value,
+                                         feels_like,
+                                         humidity,
+                                         wind_speed,
+                                         cloudness,
+                                         precipitation
+                                         )
+# data type 바꿔주기
+df<- dat %>% mutate(
+                    trip_start_time = as.POSIXct(trip_start_time),
+                    trip_end_time = as.POSIXct(trip_end_time),
+                    trip_time = hms(trip_time),
+                    wait_time = hms(wait_time),
+                    total_time = hms(total_time),
+                    cloudness = as.numeric(cloudness)
+                    )
+df %>% head() %>% paged_table()
+```
+
+========================================================================================================================
+
+- Data looks as shown above. The name of the variables are self-explanatory, so I would not go into details.
+
+- Note that the data has location info (longitude, latitude) and weather info.
+
+========================================================================================================================
+
+
+## EDA - Basic
+
+```{r echo=FALSE, warning= FALSE, message=FALSE}
+num_days<- date(max(df$trip_start_time)) - date(min(df$trip_start_time))
+paste("Number of Days for Data Collection: ",num_days)
+
+paste("Data Colelction Date: ", date(min(df$trip_start_time)),date(max(df$trip_start_time)))
+
+paste("Average # of rides per day: ",length(df$trip_uid) / as.integer(num_days))
+```
+
+### Travel Time & Waiting Time
+```{r echo=FALSE}
+trip_df<- df %>%
+  mutate(minutes_taken = hour(trip_time)*60 + minute(trip_time) + second(trip_time) / 60,
+         trip_or_wait = "trip_min") %>%
+  select(minutes_taken, trip_or_wait)
+wait_df<- df %>%
+  mutate(minutes_taken = hour(wait_time)*60 + minute(wait_time) + second(wait_time) / 60,
+         trip_or_wait = "wait_min") %>%
+  select(minutes_taken, trip_or_wait)
+
+vis1<- rbind(trip_df, wait_df)
+
+vis1<- vis1 %>%
+  plot_ly(
+    x = ~trip_or_wait,
+    y = ~minutes_taken,
+    split = ~trip_or_wait,
+    type = 'violin',
+    box = list(visible = T),
+    meanline = list(visible = T)
+  )
+vis1
+# ggplot(vis1, aes(x = "", y = minutes_taken, fill = trip_or_wait)) +
+#   geom_boxplot() 
+```
+
+========================================================================================================================
+
+- trip_min (Travel Time in munites) on average is 21 minutes, wait_min on average is 9 minutes.
+
+- There were 2 rides with wait_min (Waiting Time in munites) greater than 100 minutes. My initial thought was it's related to weather conditions, but let's take a look at it.
+
+========================================================================================================================
+
+### Rides greater than 100 mins of Travel Time
+```{r echo=FALSE}
+df %>%
+  mutate(minutes_taken = hour(wait_time)*60 + minute(wait_time) + second(wait_time) / 60) %>%
+  filter(minutes_taken > 100) %>%
+  mutate(drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360)) %>%
+  select(trip_start_time, trip_end_time, trip_time, wait_time, surge_multiplier, distance_kms, drive_speed, temperature_value, feels_like, humidity, wind_speed, cloudness, precipitation) %>% paged_table()
+```
+
+========================================================================================================================
+
+- It did rain on those 2 rides with wait_min > 100 minutes (Check precipitation column)
+
+- As for trip_start_time variable, it's the time Stan requested a ride rather than the time the ride began.
+
+- Therefore, we get an equation `trip_end_time = trip_start_time + trip_time + wait_time`
+
+========================================================================================================================
+
+### Rides with Travel Time > 50 minutes
+```{r echo=FALSE}
+df %>%
+  mutate(minutes_taken = hour(trip_time)*60 + minute(trip_time) + second(trip_time) / 60) %>%
+  filter(minutes_taken > 50) %>%
+  mutate(drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360)) %>%
+  select(trip_start_time, trip_end_time, trip_time, wait_time, surge_multiplier, distance_kms, drive_speed, temperature_value, feels_like, humidity, wind_speed, cloudness, precipitation) %>%
+  arrange(desc(distance_kms)) %>% tail(1) %>% paged_table()
+```
+
+========================================================================================================================
+
+- There was a rain for the ride with trip_min > 50 mins and shortest distance.
+
+- We will need to look at how other variables change accordingly with precipitation.
+
+========================================================================================================================
+
+### Impact of Precipitation on Rides
+
+```{r echo=FALSE}
+precipitation_df<- df %>% mutate(minutes_taken = hour(trip_time)*60 + minute(trip_time) + second(trip_time) / 60,
+                                 drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360))
+none_df<- precipitation_df %>% filter(precipitation == "none") %>% select(precipitation, drive_speed)
+rain_df<- precipitation_df %>% filter(precipitation == "rain") %>% select(precipitation, drive_speed)
+snow_df<- precipitation_df %>% filter(precipitation == "snow") %>% select(precipitation, drive_speed)
+  
+vis2<- rbind(none_df, rain_df, snow_df)
+vis2<- vis2 %>%
+  plot_ly(
+    x = ~precipitation,
+    y = ~drive_speed,
+    split = ~precipitation,
+    type = 'violin',
+    box = list(visible = T),
+    meanline = list(visible = T)
+  )
+vis2
+# ggplot(vis2, aes(x = "", y = drive_speed, fill = precipitation)) +
+#   geom_boxplot()
+```
+
+```{r echo=FALSE}
+df %>% mutate(minutes_taken = hour(trip_time)*60 + minute(trip_time) + second(trip_time) / 60,
+              drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360)) %>%
+  group_by(precipitation) %>%
+  summarise(cnt = n(),
+            avg_surge = mean(surge_multiplier, na.rm = TRUE),
+            avg_speed = mean(drive_speed, na.rm = TRUE)
+            ) %>% paged_table()
+
+```
+
+========================================================================================================================
+
+- There seems to be a slight difference among precipitation groups with average speed changing in descending order of none > rain > snow.
+
+- However, the difference does not seem too different, so I won't carry out an ANOVA test.
+
+
+========================================================================================================================
+
+### Seasonality
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+season_month<- df %>%
+  group_by(month = month(trip_start_time)) %>%
+  summarise(num_of_rides = n())
+
+vis4<- ggplot(season_month, aes(x = month, y = num_of_rides)) +
+  geom_smooth(fill = "orange") +
+  geom_point() +
+  geom_line() +
+  labs(title = "# of Ride throughout the Year")
+ggplotly(vis4)
+```
+
+========================================================================================================================
+
+- Of course it's Russia! Stan is a human after all and tends to take more rides during winter.
+
+========================================================================================================================
+
+```{r echo=FALSE}
+ride_bytime<- df %>%
+  mutate(trip_hour = hour(df$trip_start_time)) %>%
+  group_by(trip_hour) %>%
+  summarise(num_rides = n())
+vis5<- ggplot(ride_bytime, aes(x = trip_hour, y = num_rides)) +
+  geom_smooth(fill = "pink") +
+  geom_point() +
+  geom_line() +
+  labs(title = "# of Ride throughout the Day")
+ggplotly(vis5)
+```
+
+========================================================================================================================
+
+- This is a trend we see based on hour of the day. It reaches a peak at 10am. It's probably when Stan goes to work or school. We will verify my inference later of this analysis.
+
+========================================================================================================================
+
+### Ride Fee
+```{r echo=FALSE}
+# vis3<-ggplot(df, aes(x="", y = price_usd)) +
+#   geom_boxplot(fill = "green")
+# ggplotly(vis3)
+vis5<- df %>% plot_ly(
+  y = ~price_usd,
+  type = 'violin',
+  box = list(visible = T),
+  meanline = list(visible = T)
+) 
+vis5
+
+```
+
+========================================================================================================================
+
+- There are many outliers, so it's very skewed to the right.
+
+- Two summits capture my eyes. Let's dig a little more on the fee.
+
+========================================================================================================================
+
+### Ride Fee by Type of Rides
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# y = price_usd; x = trip_type
+# df %>% group_by(trip_type) %>%
+#   summarise(cnt = n())
+
+vis6_1<- ggplot(df, aes(x = trip_type,
+               y = price_usd,
+               fill = trip_type)) +
+  geom_boxplot()
+ggplotly(vis6_1)
+
+vis6_2<- ggplot(df, aes(x = distance_kms,
+               y = price_usd,
+               group = trip_type,
+               color = trip_type)) +
+  geom_point(size = 2) +
+  geom_smooth(method = lm,
+              aes(fill= trip_type))
+ggplotly(vis6_2)
+```
+
+========================================================================================================================
+
++ **Click on the legend to filter by type** 
+
++ Since uberBLACK is a premium servce, its distance to price ratio is higher than uberX.
+
++ Business by Gett seems to have a higher pricing than uberBLACK.
+
++ Distance to price ratio is in the order following order Business > uberBLACK > uberX = EconomyFix 
+
++ uberBLACK has high variance.
+
++ uberX has relatively equal variance.
+
+
+Let's carry out an One-way ANOVA test to see if there's statistically significant differece in price by type of rides.
+
+========================================================================================================================
+
+### ONE-WAY ANOVA on Average Ride Fee by Different Types of Ride
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# ONE WAY ANOVA
+trip_type_anova<- aov(price_usd~as.factor(trip_type),
+                      data = df)
+# summary(trip_type_anova) # at least one different
+par(mfrow=c(2,2))
+plot(trip_type_anova)
+
+# mean(df$price_usd) # grand mean: 5.061593
+# tapply(df$price_usd, df$trip_type, mean) # group mean
+# tapply(df$price_usd, df$trip_type, sd) # group sd
+```
+
+========================================================================================================================
+
+- One-way Anova model should follow the assumptions: Independence, Normality, Equal variance, Randomness
+
+- Normal Q-Q plot (top right): it violates the normality becuase the points in the bottom and top don't lie on a straight line.
+
+- Therefore, we can't reject the null hypothesis that "all type of rides have the same price."
+
+========================================================================================================================
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+# ONE WAY ANOVA
+log_trip_type_anova<- aov(log(price_usd)~as.factor(trip_type),
+                      data = df)
+# summary(log_trip_type_anova) # at least one different
+par(mfrow=c(2,2))
+plot(log_trip_type_anova)
+
+# mean(df$price_usd) # grand mean: 5.061593
+# tapply(df$price_usd, df$trip_type, mean) # group mean
+# tapply(df$price_usd, df$trip_type, sd) # group sd
+```
+
+========================================================================================================================
+
+- Since our previous model did not follow the assumption, we are going to take a log of price_usd to make the data follow the normality assumption.
+
+- Independece: Since each ride does not affect the price of one another, it follows the independence assumption.
+
+- Normal Q-Q plot (top right): Points lie on the straight line; therefore, it follows the normality assumption.
+
+- Residual vs. Fitted plot (top left): The variance of y does not differ by the change of x; therefore, it follow the equal variance assumption.
+
+- Since the data now satisfies all the assumptions, we will move forward with the model. 
+
+========================================================================================================================
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+summary(log_trip_type_anova) # at least one different
+```
+
+========================================================================================================================
+
+- We got F-test = 18.55, p-value < 2 * 10^(-16) which is less than our predetermined significance of 0.05.
+
+- Therefore, we can confidently reject the null hypothesis and say that there is at least one type of ride whose price is statistically different from other types of ride.
+
+- However, One-way ANOVA does not tell between which groups the difference exists. Let's carry out a post hoc test to check where the difference exists.
+
+========================================================================================================================
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+library(DescTools)
+PostHocTest(log_trip_type_anova, method="bonferroni")
+```
+
+========================================================================================================================
+
+- There are several post hoc test such as Fisher's LSD, Tukey's LSD, Bonferroni correction for F-test. I wanted to be conservative with my analysis, so I chose the Bonferroni test.
+
+- **(uberX~uberBLACK), (uberBLACK~EconomyFix), (uberBLACK~Comfort), (uberX-Business) have p-values less than our significance level of 0.05 which means these are the pairs of groups where the statistically significant difference in price exists.**
+
+========================================================================================================================
+
+### Driver's Speed
+```{r echo=FALSE}
+df %>%
+  mutate(drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360)) %>%
+  group_by(driver_name_en) %>%
+  summarise(max_speed = max(drive_speed)) %>%
+  arrange(desc(max_speed)) %>% head(10) %>% kable()
+
+df[df$driver_name_en=="Abuzar",] %>% paged_table()
+```
+
+========================================================================================================================
+
++ The table on the bottom is Mr. Abuzar's trip from the airport, and he was asssigned to Stan's ride only once.
+
++ max_speed is calculated by taking 'distance / trip duration' so it can be thought of as the average of speed of the entire ride experience. This also means that the driver might have sped up and exceeded way over his max_speed at times.
+
++ My guess based on the data above: Stan has taken the same route several times, but he was assigned to Mr. Abuzar only once. There's a possibility that Stan had given a bad review on the driver and was no longer assigned to Mr. Abuzar. Or it could be the other way where Mr. Abuzar gave a bad review on Stan. Unfortuanly, we don't have data on reviews to verify my guess.
+
++ However, we can't conclude that Mr. Abuzar went over speed limit and drove aggressively given the the ride was at midnight nearby the airport.
+
++ Let's now compare the speed of other drivers who have taken the same route on similar weather and time.
+
+========================================================================================================================
+
+```{r echo=FALSE}
+df %>%
+  filter(trip_start_address == df[df$driver_name_en=="Abuzar","trip_start_address"] &
+           trip_end_address == df[df$driver_name_en=="Abuzar","trip_end_address"]) %>%
+  mutate(drive_speed = distance_kms / (hour(trip_time) + minute(trip_time) / 60 + second(trip_time) / 360)) %>%
+  select(driver_name_en, trip_start_time, trip_end_time, drive_speed, trip_time, wait_time, distance_kms, temperature_value, 
+         humidity, wind_speed, cloudness, precipitation) %>%
+  arrange(desc(drive_speed)) %>% paged_table()
+```
+
+========================================================================================================================
+
++ There are 3 drivers who had the same departure and destination and drove at different speed on average.
+
++ If other conditions that are not available in our dataset (traffic, condition of car, etc) are similar, Mr. Abuzar seems to drove relatively faster than others
+
++ However, considering that there's no review information, a very limited sample size, and a different matching of drivers for each ride, we can't guarantee for sure.
+
++ Now that I take a closer look at the dataset, there is an error. On 11/25/2017, Mr. Abuzar and Mr.Leonid drove at the same time around midnight! There must have been an error in data collection.
+
+========================================================================================================================
+
+### Correlation
+```{r echo=FALSE}
+cor_df<- df %>% mutate(wait_minutes_taken = hour(wait_time)*60 + minute(wait_time) + second(wait_time) / 60) %>% 
+  mutate(trip_minutes_taken = hour(wait_time)*60 + minute(wait_time) + second(wait_time) / 60) %>%
+  mutate(yes_rain = ifelse(precipitation != "none",1,0),
+         surge_multiplier = ifelse(is.na(surge_multiplier),mean(surge_multiplier),surge_multiplier),
+         cloudness = ifelse(is.na(cloudness),mean(cloudness),cloudness)) %>%
+  select(price_usd,
+         distance_kms,
+         #surge_multiplier,
+         temperature_value,
+         feels_like,
+         humidity,
+         wind_speed,
+         #cloudness,
+         wait_minutes_taken,
+         trip_minutes_taken,
+         yes_rain,
+         trip_type)
+
+cor_df<- dummy_cols(cor_df, select_columns = "trip_type")[,!(names(cor_df) %in% "trip_type")]
+CORR<- cor(cor_df)
+
+cor.mtest <- function(mat, ...) {
+  mat <- as.matrix(mat)
+  n <- ncol(mat)
+  p.mat<- matrix(NA, n, n)
+  diag(p.mat) <- 0
+  for (i in 1:(n - 1)) {
+    for (j in (i + 1):n) {
+      tmp <- cor.test(mat[, i], mat[, j], ...)
+      p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+    }
+  }
+  colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+  p.mat
+}
+
+p.mat <- cor.mtest(cor_df)
+
+corrplot(CORR, type="upper", order="hclust", tl.col = "black",
+         p.mat = p.mat, sig.level = 0.10)
+```
+
+========================================================================================================================
+
+- In the correlation plot, I set the significance level at 0.10 and correlations with p-value greater than 0.10 will be considered not stistically significant.
+
+- It's noteworthy that there is a weak positive correlation among temperature, feels_like, wait_time, trip_time, price/fee, distance, and uberBLACK.
+
+- price_usd & distance_kms: Weak positive correlation
+
+- Premium service like uberBLACK & price_usd: Weak positive correlation
+
+========================================================================================================================
+
+
+## EDA - GPS
+
+### Number of Ride by Departure Address
+
+```{r echo=FALSE}
+# Number of Ride by Departure Address
+df %>%
+  group_by(trip_start_address) %>%
+  summarise(pickup_cnt = n()) %>%
+  arrange(desc(pickup_cnt)) %>% head(6) %>% kable()
+```
+
+### Number of Ride by Destination Address
+
+```{r echo=FALSE}
+# Number of Ride by Destination Address
+df %>%
+  group_by(trip_end_address) %>%
+  summarise(dropoff_cnt = n()) %>%
+  arrange(desc(dropoff_cnt)) %>% head(6) %>% kable()
+```
+
+========================================================================================================================
+
++ Paradnaya Ulitsa, 3, Sankt-Peterburg, Russia, 191014. I am guessing this is the home address as it appears more frequently in both departure and destination.
+
++ Sverdlovskaya naberezhnaya, 44?/4?, Sankt-Peterburg, Russia, 195027. I am guessing this is a company or school because it ranked 2nd in terms of frequency.
+
++ Let's now look at the trips between departure and destination.
+
+========================================================================================================================
+
+### Frequency of Trips between Grouped Departure and Destination & Average Departure Time
+
+```{r echo=FALSE, message=FALSE}
+df %>%
+  mutate(trip_start_hms = times(substr(df$trip_start_time,12,19))) %>%
+  group_by(trip_start_address, trip_end_address) %>%
+  summarise(pickup_cnt = n(),
+            avg_time = mean(trip_start_hms)) %>%
+  arrange(desc(pickup_cnt)) %>% head(10) %>% kable()
+```
+
+========================================================================================================================
+
++ The first two rows show that the most frequent trips was between what I guessed as home and company/school.
+
++ The first two rows show that Stan leaves home for work around 10:37am and heads back home around 17:27pm.
+
++ The 3rd row entry shows that Stan goes to the airport around 16:00pm from his home. I thought he would be a consultant at first, but I don't think consultants departs from home to the airport around 16:00pm. Maybe he is a free lancer?
+
+
+========================================================================================================================
+
+### Frequency of Trips between Grouped Departure and Destination & Average Arrival Time
+
+```{r echo=FALSE, message=FALSE}
+df %>%
+  mutate(trip_end_hms = times(substr(df$trip_end_time,12,19))) %>%
+  group_by(trip_start_address, trip_end_address) %>%
+  summarise(dropoff_cnt = n(),
+            avg_time = mean(trip_end_hms)) %>%
+  arrange(desc(dropoff_cnt))%>% head(10) %>% kable()
+```
+
+========================================================================================================================
+
++ This table shows the time Stan arrives at the destination.
+
++ Top 1 shows that he arrives at work around 11:05am.
+
++ I guess his company does not require him to be at work 11 o'clock sharp.
+
+========================================================================================================================
+
+### Interactive Map: Frequency of Rides based on Departure
+
+```{r echo=FALSE}
+df %>%
+  leaflet() %>%
+  addTiles() %>%
+  addMarkers(
+    lng = df$pickup_long,
+    lat = df$pickup_lat,
+    popup = df$trip_start_address,
+    clusterOptions =  markerClusterOptions()
+  )
+```
+
+========================================================================================================================
+
++ **Click or zoom in for detailed information**
+
++ If you keep zooming into the point where it has the highest number, you will find that the neighborhood of his house. ~~This sounds creepy~~
+
+
+========================================================================================================================
+
+### Interactive Map: Trip Path (Line from Departure to Destination)
+
+```{r echo=FALSE, warning= FALSE}
+start_address_cnt<- df %>%
+  group_by(trip_start_address) %>%
+  summarise(cnt = n()) %>%
+  arrange(desc(cnt))
+
+map_df<- merge(df,start_address_cnt, by = "trip_start_address")
+
+geo <- list(
+  projection = list(
+    type = 'azimuthal equal area',
+    rotation = list(lon = 30, lat = 60, roll = 0),
+    scale = 10
+  ),
+  showland = TRUE,
+  showocean = TRUE,
+  landcolor = toRGB("gray95"),
+  countrycolor = toRGB("gray80")
+)
+
+plot_geo(color = I("red")) %>%
+   add_markers(
+     data = map_df, x = ~pickup_long, y = ~pickup_lat, text = ~trip_start_address,
+     hoverinfo = "text", alpha = 0.5, size = ~cnt
+   ) %>%
+  add_segments(
+    data = group_by(map_df, trip_uid),
+    x = ~pickup_long, xend = ~dropoff_long,
+    y = ~pickup_lat, yend = ~dropoff_lat,
+    alpha = 0.3, size = I(1), hoverinfo = "none"
+  ) %>%
+  layout(geo = geo, showlegend = FALSE)
+
+```
+
+========================================================================================================================
+
++ **Click or zoom in for detailed information**
+
++ This map draws a line between departure and destination.
+
++ You can see that there is a cluster on the bottom right corner and there's no line between the clusters. This implies that he did not take uber to get to to the other city. My guess is that Stan got a ride from his friend or flew to the other city.
+
+========================================================================================================================
+
+
+## In retrospect...
+
+All in all, we have explored Stan's Uber history, analyzed drivers' speed, and guesstimated some information about him, such as his job and . While I was doing the EDA, I was a little worried that I might be digging a little too deep but thanks to Stan's generosity, I was able to explore and scratched the itchy spot. The analysis might have been more interesting with review information.
+
+Besides ride hailing service like Uber, I am curious about what kind of data ride sharing companies like Zipcar, who allows short-term rent to customers, are accumulating and the fancy pricing models they are building. I don't think companies would share those crucial data, so I might as well look for different data sets and integrate them to come up with a more intriguing analysis!
+
+If you are curious about Stan's website please click [here](https://stantyan.com/) :)
+
+---
